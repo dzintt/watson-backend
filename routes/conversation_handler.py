@@ -4,7 +4,7 @@ import os
 from fastapi import APIRouter, status, UploadFile, File, BackgroundTasks
 from pydantic import BaseModel
 from modules import database
-from utils.transcription import perform_transcription_and_diarization
+from utils import transcription
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
@@ -50,11 +50,26 @@ async def process_audio(upload_id: str, file_path: str):
     try:
         logger.info(f"Starting audio processing for upload: {upload_id}")
         
+        # Update status to processing
+        await database.update_upload_status(upload_id, "processing")
+        
         # Step 1: Transcription and Speaker Diarization
-        logger.info(f"Starting transcription and diarization for {upload_id}")
-        transcript_data = await perform_transcription_and_diarization(file_path)
-        transcript_id = await database.store_transcript(upload_id, transcript_data)
-        logger.info(f"Completed transcription and diarization for {upload_id}, transcript_id: {transcript_id}")
+        logger.info(f"Starting transcription and diarization for upload: {upload_id}")
+        
+        # Get HF token from environment if available
+        hf_token = os.getenv("HF_TOKEN")
+        
+        # Process audio file with transcription and diarization
+        transcript_data = await transcription.process_audio_file(file_path, hf_token=hf_token)
+        
+        # Set transcript ID to match upload ID for easier reference
+        transcript_data["transcript_id"] = upload_id
+        
+        # Store transcript data in database
+        await database.store_transcript(upload_id, transcript_data)
+        
+        # Update status to indicate transcription is complete
+        await database.update_upload_status(upload_id, "transcribed")
         
         # Step 2: Summarization and Mindmap Generation
         # TODO: Implement summary and mindmap generation

@@ -1,211 +1,413 @@
-import os
 import logging
+import tempfile
+import os
 import asyncio
-import numpy as np
-from typing import List, Dict, Any
-from pathlib import Path
-from datetime import datetime
+from typing import Dict, List, Any, Optional
+from dataclasses import dataclass
+import json
 
-# Import for audio processing
-import librosa
+try:
+    import torch
+    import whisper
+    from pyannote.audio import Pipeline
+    import librosa
+    import soundfile as sf
 
-# Import for transcription
-import whisper
-from whisper.audio import pad_or_trim, log_mel_spectrogram
+    TRANSCRIPTION_AVAILABLE = True
+    DIARIZATION_AVAILABLE = True
+except ImportError:
+    TRANSCRIPTION_AVAILABLE = False
+    DIARIZATION_AVAILABLE = False
+    logging.warning(
+        "Transcription or diarization dependencies not installed. Install with: pip install -r requirements_audio.txt"
+    )
 
-# Import for speaker diarization
-import torch
-from pyannote.audio import Pipeline
-from pyannote.core import Segment
-
-from dotenv import load_dotenv
-
-load_dotenv()
+logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
-# Global model instances (loaded only once for efficiency)
-_whisper_model = None
-_diarization_pipeline = None
 
-# Supported audio formats
-SUPPORTED_FORMATS = [".wav", ".mp3", ".m4a"]
+@dataclass
+class DiarizedTranscript:
+    """Represents a transcript with speaker information"""
 
-def get_whisper_model():
-    """Lazy loading of Whisper model to save memory."""
-    global _whisper_model
-    if _whisper_model is None:
-        model_size = os.getenv("WHISPER_MODEL_SIZE", "base")
-        logger.info(f"Loading Whisper model (size: {model_size})")
-        _whisper_model = whisper.load_model(model_size)
-    return _whisper_model
+    segments: List[Dict[str, Any]]
+    speakers: List[str]
+    total_duration: float
+    confidence_score: float
 
-def get_diarization_pipeline():
-    """Lazy loading of Pyannote diarization pipeline."""
-    global _diarization_pipeline
-    if _diarization_pipeline is None:
-        hf_token = os.getenv("HF_TOKEN")
-        if not hf_token:
-            raise ValueError("HF_TOKEN environment variable is required for speaker diarization")
+
+class TranscriptionService:
+    """Service for transcribing audio files using Whisper"""
+
+    def __init__(self, model_name: str = "base"):
+        self.model_name = model_name
+        self.model = None
+        self._initialize_model()
+
+    def _initialize_model(self):
+        """Initialize the Whisper model"""
+        if not TRANSCRIPTION_AVAILABLE:
+            logger.error("Transcription dependencies not available")
+            return
+
+        try:
+            logger.info(f"Initializing Whisper model: {self.model_name}")
+            self.model = whisper.load_model(self.model_name)
             
-        logger.info("Loading pyannote.audio diarization pipeline")
-        _diarization_pipeline = Pipeline.from_pretrained(
-            "pyannote/speaker-diarization-3.1",
-            use_auth_token=hf_token
-        )
+            # Use GPU if available
+            if torch.cuda.is_available():
+                self.model = self.model.to(torch.device("cuda"))
+                logger.info("Using GPU for transcription")
+            else:
+                logger.info("Using CPU for transcription")
+                
+        except Exception as e:
+            logger.error(f"Failed to initialize Whisper model: {str(e)}")
+            self.model = None
+
+    def is_available(self) -> bool:
+        """Check if transcription is available"""
+        return TRANSCRIPTION_AVAILABLE and self.model is not None
+
+    async def transcribe_audio(self, audio_path: str) -> Dict[str, Any]:
+        """Transcribe audio file using Whisper"""
+        if not self.is_available():
+            raise RuntimeError("Transcription not available. Install dependencies first.")
+
+        logger.info(f"Starting transcription for: {audio_path}")
         
-        # Use GPU if available
-        if torch.cuda.is_available():
-            _diarization_pipeline = _diarization_pipeline.to(torch.device("cuda"))
+        # Ensure the path is absolute and properly normalized
+        abs_audio_path = os.path.abspath(os.path.normpath(audio_path))
+        logger.info(f"Using normalized path: {abs_audio_path}")
+        
+        # Verify file exists and is readable
+        if not os.path.isfile(abs_audio_path):
+            raise FileNotFoundError(f"Audio file not found: {abs_audio_path}")
             
-    return _diarization_pipeline
+        # Load audio data into memory first
+        try:
+            logger.info("Loading audio file into memory")
+            # For whisper, it's better to load the file directly without preprocessing
+            # This helps avoid file path issues
+            audio_data = abs_audio_path
+            
+            # Run transcription in a thread pool to avoid blocking
+            loop = asyncio.get_event_loop()
+            result = await loop.run_in_executor(
+                None, lambda: self.model.transcribe(audio_data, word_timestamps=True)
+            )
 
-async def load_audio_with_librosa(audio_path: str) -> np.ndarray:
-    """Load audio file using librosa."""
-    logger.info(f"Loading audio file with librosa: {audio_path}")
-    loop = asyncio.get_event_loop()
-    
-    # Load and preprocess audio file in a separate thread
-    audio, sr = await loop.run_in_executor(
-        None,
-        lambda: librosa.load(audio_path, sr=16000, mono=True)
-    )
-    
-    return audio
+            logger.info(f"Transcription completed: {len(result['text'])} characters")
+            return result
+        except Exception as e:
+            logger.error(f"Error during transcription: {str(e)}")
+            raise
 
-async def transcribe_audio(audio_path: str) -> dict:
-    """Transcribe audio file using Whisper with librosa for audio loading."""
-    logger.info(f"Transcribing audio file: {audio_path}")
-    
-    # Load audio using librosa
-    audio = await load_audio_with_librosa(audio_path)
-    
-    # Run transcription in a separate thread to avoid blocking the event loop
-    loop = asyncio.get_event_loop()
-    model = get_whisper_model()
-    
-    # Preprocess audio for Whisper
-    def process_and_transcribe():
-        # Pad or trim audio to 30 seconds (required by Whisper)
-        audio_padded = pad_or_trim(audio)
+
+class SpeakerDiarizationService:
+    """Service for performing speaker diarization on audio files."""
+
+    def __init__(self, model_name: str = "pyannote/speaker-diarization-3.1", hf_token: Optional[str] = None):
+        self.model_name = model_name
+        self.hf_token = hf_token
+        self.pipeline = None
+        self._initialize_pipeline()
+
+    def _initialize_pipeline(self):
+        """Initialize the diarization pipeline"""
+        if not DIARIZATION_AVAILABLE:
+            logger.error("Speaker diarization dependencies not available")
+            return
+
+        try:
+            logger.info(f"Initializing speaker diarization pipeline: {self.model_name}")
+
+            self.pipeline = Pipeline.from_pretrained(
+                self.model_name, use_auth_token=self.hf_token
+            )
+
+            # Use GPU if available
+            if torch.cuda.is_available():
+                self.pipeline = self.pipeline.to(torch.device("cuda"))
+                logger.info("Using GPU for speaker diarization")
+            else:
+                logger.info("Using CPU for speaker diarization")
+
+        except Exception as e:
+            logger.error(f"Failed to initialize diarization pipeline: {str(e)}")
+            self.pipeline = None
+
+    def is_available(self) -> bool:
+        """Check if speaker diarization is available"""
+        return DIARIZATION_AVAILABLE and self.pipeline is not None
+
+    async def diarize_audio(self, audio_path: str, num_speakers: Optional[int] = None) -> DiarizedTranscript:
+        """Perform speaker diarization on an audio file."""
+        if not self.is_available():
+            raise RuntimeError("Speaker diarization not available. Install dependencies first.")
+
+        logger.info(f"Starting speaker diarization for: {audio_path}")
         
-        # Generate log-mel spectrogram
-        mel = log_mel_spectrogram(audio_padded)
+        # Ensure the path is absolute and properly normalized
+        abs_audio_path = os.path.abspath(os.path.normpath(audio_path))
+        logger.info(f"Using normalized path: {abs_audio_path}")
         
-        # Transcribe with Whisper model
-        result = model.transcribe(
-            audio, 
-            verbose=False,
-            condition_on_previous_text=True,
-            initial_prompt="This is an audio conversation with multiple speakers."
+        # Verify file exists and is readable
+        if not os.path.isfile(abs_audio_path):
+            raise FileNotFoundError(f"Audio file not found: {abs_audio_path}")
+            
+        try:
+            logger.info("Verifying audio file access")
+            with open(abs_audio_path, 'rb') as f:
+                # Just check we can read it
+                f.read(1024)
+
+            # Run in a thread pool to avoid blocking
+            loop = asyncio.get_event_loop()
+            
+            # Preprocess audio (in thread pool)
+            logger.info("Preprocessing audio file")
+            processed_audio_path = await loop.run_in_executor(
+                None, lambda: self._preprocess_audio(abs_audio_path)
+            )
+            logger.info(f"Audio preprocessed: {processed_audio_path}")
+
+            # Perform diarization (in thread pool)
+            logger.info("Running diarization pipeline")
+            diarization = await loop.run_in_executor(
+                None, lambda: self.pipeline(processed_audio_path, num_speakers=num_speakers)
+            )
+
+            # Process results
+            segments = []
+            speakers = set()
+
+            for turn, _, speaker in diarization.itertracks(yield_label=True):
+                segment = {
+                    "start": turn.start,
+                    "end": turn.end,
+                    "speaker": speaker,
+                    "duration": turn.end - turn.start,
+                }
+                segments.append(segment)
+                speakers.add(speaker)
+
+            # Calculate total duration
+            total_duration = max([seg["end"] for seg in segments]) if segments else 0.0
+
+            # Calculate confidence score
+            confidence_score = self._calculate_confidence_score(segments)
+
+            result = DiarizedTranscript(
+                segments=segments,
+                speakers=sorted(list(speakers)),
+                total_duration=total_duration,
+                confidence_score=confidence_score,
+            )
+
+            logger.info(f"Diarization completed: {len(speakers)} speakers, {len(segments)} segments")
+            
+            # Clean up temporary file
+            if processed_audio_path != abs_audio_path and os.path.exists(processed_audio_path):
+                os.unlink(processed_audio_path)
+                
+            return result
+
+        except Exception as e:
+            logger.error(f"Error during speaker diarization: {str(e)}")
+            logger.error(f"Audio path that failed: {abs_audio_path}")
+            import traceback
+            logger.error(f"Traceback: {traceback.format_exc()}")
+            raise
+
+    def _preprocess_audio(self, audio_path: str) -> str:
+        """Preprocess audio file for better diarization results."""
+        try:
+            logger.info(f"Preprocessing audio: {audio_path}")
+            
+            # Verify file exists before attempting to load it
+            if not os.path.isfile(audio_path):
+                raise FileNotFoundError(f"Audio file not found for preprocessing: {audio_path}")
+                
+            # Load audio with librosa - this can handle various audio formats
+            logger.info("Loading audio with librosa")
+            audio, sr = librosa.load(audio_path, sr=16000)  # Resample to 16kHz
+
+            # Apply basic preprocessing
+            logger.info("Applying audio preprocessing")
+            # Remove silence at beginning and end
+            audio, _ = librosa.effects.trim(audio, top_db=20)
+
+            # Normalize audio
+            audio = librosa.util.normalize(audio)
+
+            # Create a consistent temp directory
+            temp_dir = os.path.join(os.getcwd(), "temp_audio")
+            os.makedirs(temp_dir, exist_ok=True)
+            
+            # Save processed audio to a named temporary file
+            temp_filename = f"processed_{os.path.basename(audio_path)}.wav"
+            temp_path = os.path.join(temp_dir, temp_filename)
+            
+            logger.info(f"Saving preprocessed audio to: {temp_path}")
+            sf.write(temp_path, audio, sr)
+            
+            return temp_path
+
+        except Exception as e:
+            logger.warning(f"Audio preprocessing failed, using original: {str(e)}")
+            import traceback
+            logger.warning(f"Preprocessing traceback: {traceback.format_exc()}")
+            return audio_path
+
+    def _calculate_confidence_score(self, segments: List[Dict[str, Any]]) -> float:
+        """Calculate a confidence score for the diarization results."""
+        if not segments:
+            return 0.0
+
+        # Simple heuristic: longer segments and fewer speaker changes indicate higher confidence
+        total_duration = sum(seg["duration"] for seg in segments)
+        avg_segment_duration = total_duration / len(segments)
+
+        # Normalize based on typical speech patterns
+        # Segments of 2-10 seconds are considered optimal
+        if avg_segment_duration >= 2.0:
+            duration_score = min(1.0, avg_segment_duration / 10.0)
+        else:
+            duration_score = avg_segment_duration / 2.0
+
+        # Factor in number of speaker changes
+        speaker_changes = 0
+        for i in range(1, len(segments)):
+            if segments[i]["speaker"] != segments[i - 1]["speaker"]:
+                speaker_changes += 1
+
+        change_ratio = speaker_changes / len(segments) if segments else 0
+        change_score = max(0.0, 1.0 - change_ratio * 2)  # Penalize too many changes
+
+        # Combine scores
+        confidence = duration_score * 0.6 + change_score * 0.4
+        return min(1.0, max(0.0, confidence))
+
+
+async def process_audio_file(audio_path: str, hf_token: Optional[str] = None) -> Dict[str, Any]:
+    """Process audio file for transcription and speaker diarization."""
+    try:
+        # Initialize services
+        transcription_service = TranscriptionService(model_name="base")
+        diarization_service = SpeakerDiarizationService(hf_token=hf_token)
+        
+        # Check if services are available
+        if not transcription_service.is_available():
+            raise RuntimeError("Transcription service not available")
+            
+        if not diarization_service.is_available():
+            raise RuntimeError("Speaker diarization service not available")
+        
+        # Run transcription and diarization concurrently
+        transcription_task = asyncio.create_task(transcription_service.transcribe_audio(audio_path))
+        diarization_task = asyncio.create_task(diarization_service.diarize_audio(audio_path))
+        
+        # Wait for both tasks to complete
+        transcription_result = await transcription_task
+        diarization_result = await diarization_task
+        
+        # Combine results
+        result = await combine_transcription_with_diarization(
+            transcription_result, diarization_result
         )
         
         return result
-    
-    # Offload the CPU-intensive transcription to a thread pool
-    result = await loop.run_in_executor(None, process_and_transcribe)
-    
-    logger.info(f"Transcription completed for {audio_path}")
-    return result
-
-async def perform_diarization(audio_path: str) -> dict:
-    """Perform speaker diarization on an audio file."""
-    logger.info(f"Performing speaker diarization on {audio_path}")
-    
-    # Run diarization in a separate thread to avoid blocking the event loop
-    loop = asyncio.get_event_loop()
-    pipeline = get_diarization_pipeline()
-    
-    # Offload the CPU/GPU-intensive diarization to a thread pool
-    diarization = await loop.run_in_executor(
-        None,
-        lambda: pipeline(audio_path)
-    )
-    
-    logger.info(f"Diarization completed for {audio_path}")
-    return diarization
-
-def map_transcription_to_speakers(transcription: dict, diarization) -> List[dict]:
-    """Map transcribed segments to speakers identified in diarization."""
-    transcript_segments = []
-    
-    # Process each segment from the transcription
-    for segment in transcription["segments"]:
-        start_time = segment["start"]
-        end_time = segment["end"]
-        text = segment["text"].strip()
-        
-        # Create a segment object for the current transcription segment
-        current_segment = Segment(start_time, end_time)
-        
-        # Find which speaker was active during this segment
-        speaker_times = {}
-        
-        # Iterate through diarization results
-        for turn, _, speaker in diarization.itertracks(yield_label=True):
-            # If there's an overlap between this speaker turn and our segment
-            overlap = current_segment.intersect(turn)
-            
-            if overlap:
-                # Calculate the duration of overlap
-                overlap_duration = overlap.duration
-                
-                # Add or update the speaker's time
-                if speaker in speaker_times:
-                    speaker_times[speaker] += overlap_duration
-                else:
-                    speaker_times[speaker] = overlap_duration
-        
-        # Determine the dominant speaker for this segment
-        if speaker_times:
-            dominant_speaker = max(speaker_times, key=speaker_times.get)
-        else:
-            dominant_speaker = "Unknown Speaker"
-        
-        # Add the segment with speaker information
-        transcript_segments.append({
-            "speaker": dominant_speaker,
-            "start": start_time,
-            "end": end_time,
-            "text": text
-        })
-    
-    return transcript_segments
-
-async def perform_transcription_and_diarization(file_path: str) -> dict:
-    """Main function to perform both transcription and speaker diarization."""
-    try:
-        file_extension = os.path.splitext(file_path)[1].lower()
-        if file_extension not in SUPPORTED_FORMATS:
-            raise ValueError(f"Unsupported audio format: {file_extension}. Supported formats: {SUPPORTED_FORMATS}")
-        
-        # Check if file exists
-        if not os.path.exists(file_path):
-            raise FileNotFoundError(f"Audio file not found: {file_path}")
-        
-        # Perform transcription and diarization concurrently
-        transcription_task = asyncio.create_task(transcribe_audio(file_path))
-        diarization_task = asyncio.create_task(perform_diarization(file_path))
-        
-        # Wait for both tasks to complete
-        transcription = await transcription_task
-        diarization = await diarization_task
-        
-        # Map transcription segments to speakers
-        transcript_with_speakers = map_transcription_to_speakers(transcription, diarization)
-        
-        # Create the final transcript data structure
-        transcript_data = {
-            "transcript_id": Path(file_path).stem,  # Use filename without extension as ID
-            "text": transcript_with_speakers,
-            "metadata": {
-                "duration": transcription.get("duration", 0),
-                "language": transcription.get("language", "en"),
-                "processed_at": datetime.utcnow().isoformat()
-            }
-        }
-        
-        return transcript_data
         
     except Exception as e:
-        logger.error(f"Error in transcription and diarization: {str(e)}")
+        logger.error(f"Error processing audio file: {str(e)}")
         raise
+
+
+async def combine_transcription_with_diarization(
+    transcription: Dict[str, Any], diarization: DiarizedTranscript
+) -> Dict[str, Any]:
+    """Combine transcription and diarization results."""
+    try:
+        logger.info("Combining transcription and diarization results")
+        
+        # Get word-level timestamps from transcription
+        word_timestamps = transcription.get("segments", [])
+        words_with_timestamps = []
+        
+        for segment in word_timestamps:
+            for word in segment.get("words", []):
+                words_with_timestamps.append({
+                    "word": word.get("word", ""),
+                    "start": word.get("start", 0),
+                    "end": word.get("end", 0),
+                })
+        
+        # Map words to speakers
+        diarized_segments = []
+        current_speaker = None
+        current_text = []
+        current_start = None
+        
+        for word_info in words_with_timestamps:
+            word = word_info.get("word", "")
+            start_time = word_info.get("start", 0)
+            end_time = word_info.get("end", 0)
+            
+            # Find which speaker is active at this time
+            speaker = _find_speaker_at_time(start_time, diarization.segments)
+            
+            if speaker != current_speaker:
+                # Speaker change detected
+                if current_text and current_speaker:
+                    diarized_segments.append({
+                        "speaker": current_speaker,
+                        "text": "".join(current_text).strip(),
+                        "start": current_start,
+                        "end": start_time,
+                    })
+                    
+                current_speaker = speaker
+                current_text = [word]
+                current_start = start_time
+            else:
+                current_text.append(word)
+        
+        # Add final segment
+        if current_text and current_speaker:
+            diarized_segments.append({
+                "speaker": current_speaker,
+                "text": "".join(current_text).strip(),
+                "start": current_start,
+                "end": words_with_timestamps[-1].get("end", 0) if words_with_timestamps else 0,
+            })
+        
+        # Return combined result
+        return {
+            "transcript_id": None,  # Will be set by the database
+            "text": transcription.get("text", ""),
+            "segments": diarized_segments,
+            "speakers": diarization.speakers,
+            "confidence": diarization.confidence_score,
+        }
+        
+    except Exception as e:
+        logger.error(f"Error combining transcription and diarization: {str(e)}")
+        raise
+
+
+def _find_speaker_at_time(timestamp: float, segments: List[Dict[str, Any]]) -> str:
+    """Find which speaker is active at a given timestamp."""
+    for segment in segments:
+        if segment["start"] <= timestamp <= segment["end"]:
+            return segment["speaker"]
+    
+    # If no exact match, find closest segment
+    if segments:
+        closest_segment = min(segments, key=lambda s: min(
+            abs(s["start"] - timestamp), 
+            abs(s["end"] - timestamp)
+        ))
+        return closest_segment["speaker"]
+    
+    return "SPEAKER_UNKNOWN"
