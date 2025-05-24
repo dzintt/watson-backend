@@ -99,6 +99,17 @@ def find_linkedin_profile(transcript_text: str) -> list[str]:
 
     # parse the response for the urls using regex
     urls = re.findall(r'https://www.linkedin.com/in/[^\s]+', response.text)
+
+    # TODO: Reformat to proper response
+    # [
+    #     {
+    #         "name": "John Smith",
+    #         "linkedin_url": "https://www.linkedin.com/in/gmcast",
+    #         "job_title": "Student",
+    #         "description": "Head of CS club, interested in AI"
+    #     },
+    #     ...
+    # ]
     
     return urls
 

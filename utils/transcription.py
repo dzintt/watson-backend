@@ -2,9 +2,11 @@ import logging
 import tempfile
 import os
 import asyncio
+import shutil
 from typing import Dict, List, Any, Optional
 from dataclasses import dataclass
 import json
+from pathlib import Path
 
 try:
     import torch
@@ -12,6 +14,8 @@ try:
     from pyannote.audio import Pipeline
     import librosa
     import soundfile as sf
+    import ffmpeg
+    from pydub import AudioSegment
 
     TRANSCRIPTION_AVAILABLE = True
     DIARIZATION_AVAILABLE = True
@@ -290,9 +294,73 @@ class SpeakerDiarizationService:
         return min(1.0, max(0.0, confidence))
 
 
+def convert_audio_to_mp3(audio_path: str) -> str:
+    """
+    Convert any audio file to MP3 format for consistent processing.
+    
+    Args:
+        audio_path: Path to the original audio file
+        
+    Returns:
+        Path to the converted MP3 file
+    """
+    try:
+        # Create temp directory if it doesn't exist
+        temp_dir = os.path.join(os.getcwd(), "temp_audio")
+        os.makedirs(temp_dir, exist_ok=True)
+        
+        # Get file info
+        original_path = Path(audio_path)
+        file_stem = original_path.stem
+        file_ext = original_path.suffix.lower()
+        
+        # If already an MP3 file, return the original path
+        if file_ext == ".mp3":
+            logger.info(f"File is already in MP3 format: {audio_path}")
+            return audio_path
+            
+        # Create output path for the MP3 file
+        mp3_filename = f"{file_stem}.mp3"
+        mp3_path = os.path.join(temp_dir, mp3_filename)
+        
+        logger.info(f"Converting {file_ext} file to MP3: {mp3_path}")
+        
+        # Try using pydub for conversion (handles most formats)
+        try:
+            # Load audio file with pydub (automatically detects format)
+            audio = AudioSegment.from_file(audio_path)
+            # Export as MP3
+            audio.export(mp3_path, format="mp3")
+            logger.info(f"Successfully converted to MP3 using pydub: {mp3_path}")
+            return mp3_path
+        except Exception as e:
+            logger.warning(f"Pydub conversion failed: {str(e)}. Trying ffmpeg...")
+            
+            # Fallback to ffmpeg directly
+            try:
+                # Use ffmpeg to convert the file
+                (ffmpeg
+                    .input(audio_path)
+                    .output(mp3_path, acodec='libmp3lame', ac=1, ar='16k')
+                    .run(capture_stdout=True, capture_stderr=True, overwrite_output=True))
+                logger.info(f"Successfully converted to MP3 using ffmpeg: {mp3_path}")
+                return mp3_path
+            except Exception as ffmpeg_error:
+                logger.error(f"FFmpeg conversion failed: {str(ffmpeg_error)}")
+                # If all conversions fail, return original path
+                return audio_path
+    except Exception as e:
+        logger.error(f"Error converting audio file: {str(e)}")
+        return audio_path
+
 async def process_audio_file(audio_path: str, hf_token: Optional[str] = None) -> Dict[str, Any]:
     """Process audio file for transcription and speaker diarization."""
     try:
+        # Convert audio to MP3 format if needed
+        logger.info(f"Processing audio file: {audio_path}")
+        mp3_audio_path = convert_audio_to_mp3(audio_path)
+        logger.info(f"Using audio file for processing: {mp3_audio_path}")
+        
         # Initialize services
         transcription_service = TranscriptionService(model_name="base")
         diarization_service = SpeakerDiarizationService(hf_token=hf_token)
@@ -305,8 +373,8 @@ async def process_audio_file(audio_path: str, hf_token: Optional[str] = None) ->
             raise RuntimeError("Speaker diarization service not available")
         
         # Run transcription and diarization concurrently
-        transcription_task = asyncio.create_task(transcription_service.transcribe_audio(audio_path))
-        diarization_task = asyncio.create_task(diarization_service.diarize_audio(audio_path))
+        transcription_task = asyncio.create_task(transcription_service.transcribe_audio(mp3_audio_path))
+        diarization_task = asyncio.create_task(diarization_service.diarize_audio(mp3_audio_path))
         
         # Wait for both tasks to complete
         transcription_result = await transcription_task
