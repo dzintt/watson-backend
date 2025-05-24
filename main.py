@@ -22,7 +22,7 @@ def main():
     
     app.include_router(api_router)
 
-    port = int(os.getenv("PORT", 8000))
+    port = int(os.getenv("PORT", 8001))
     uvicorn.run(app, host="0.0.0.0", port=port)
 
 
