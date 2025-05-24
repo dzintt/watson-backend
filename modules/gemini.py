@@ -4,7 +4,7 @@ from pydantic import BaseModel, Field
 from typing import List, Dict, Any, Optional, Tuple
 from dotenv import load_dotenv
 from utils import common
-
+from modules.linkedin import google_search_linkedin
 import json
 import logging
 import os
@@ -47,6 +47,60 @@ class ConversationSummary(BaseModel):
 
 # Initialize Gemini client
 client = genai.Client(api_key=os.getenv('GEMINI_API_KEY'))
+
+
+def find_linkedin_profile(transcript_text: str) -> list[str]:
+    """
+    Find a LinkedIn profile URL for a given name.
+    
+    Args:
+        transcript_text (str): The full text of the transcript to search for on LinkedIn using context clues from the transcript
+        
+    Returns:
+        list[str]: A list of LinkedIn profile URLs if found that might match the profile, otherwise an empty list
+    """
+    query_config = types.GenerateContentConfig(
+        tools=[google_search_linkedin],
+        response_mime_type='text/plain',
+        temperature=1.0
+    )
+
+    base_prompt = """
+    You are an AI assistant specialized in finding LinkedIn profiles based on context clues from a transcript.
+    
+    ## IMPORTANT RULES:
+    - If a speaker's name is clearly mentioned in the conversation (e.g., "Hi, I'm John Smith"), use that name to search for the profile
+    - Do not invent names that aren't mentioned in the conversation
+    - Correct obvious speech recognition errors but preserve the authentic style of spoken language
+    - Do not add new content that wasn't in the original transcript
+    
+    ## TASK:
+    Find a LinkedIn profile URL for the following transcript text:
+    
+    {}
+    
+    ## RESPONSE:
+    [
+        {
+            "name": "John Smith",
+            "linkedin_url": "https://www.linkedin.com/in/gmcast",
+            "job_title": "Student",
+            "description": "Head of CS club, interested in AI"
+        },
+        ...
+    ]
+    """
+    
+    response = client.models.generate_content(
+        model='gemini-2.0-flash',
+        contents=[base_prompt.format(transcript_text)],
+        config=query_config
+    )
+
+    # parse the response for the urls using regex
+    urls = re.findall(r'https://www.linkedin.com/in/[^\s]+', response.text)
+    
+    return urls
 
 def _fix_split_sentences(segments: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
     """
