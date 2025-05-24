@@ -443,6 +443,8 @@ async def process_audio(upload_id: str, file_path: str):
                 transcript_text, transcript_data.get("segments", [])[-1].get("end", 0)
             )
 
+            summary_result.summary = summary_result.summary.replace("```html", "").replace("```", "")
+
             # Convert the mindmap nodes to the format expected by the database
             mindmap_data = {"nodes": [], "edges": []}
 
