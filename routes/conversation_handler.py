@@ -296,18 +296,68 @@ async def process_audio(upload_id: str, file_path: str):
             await database.update_upload_status(upload_id, "enhancement_failed")
         
         # Step 2: Summarization and Mindmap Generation
-        # TODO: Implement summary and mindmap generation
-        # For now, we'll generate a placeholder summary
-        logger.info(f"Generating placeholder summary for upload: {upload_id}")
-        summary_data = {
-            "summary": "Automatic summary generation is not yet implemented.",
-            "mindmap": {
-                "nodes": [{ "id": 1, "label": "Conversation" }],
+        try:
+            logger.info(f"Generating summary and mindmap for upload: {upload_id}")
+            await database.update_upload_status(upload_id, "summarizing")
+            
+            # Get the enhanced transcript if available, otherwise use original transcript
+            enhanced_transcript = await database.get_enhanced_transcript_by_upload_id(upload_id)
+            if enhanced_transcript:
+                logger.info(f"Using enhanced transcript for summary generation")
+                transcript_text = enhanced_transcript.get("text", "")
+            else:
+                logger.info(f"Enhanced transcript not found, using original transcript")
+                original_transcript = await database.get_transcript_by_upload_id(upload_id)
+                if not original_transcript:
+                    logger.error(f"No transcript found for upload {upload_id}")
+                    raise ValueError(f"No transcript found for upload {upload_id}")
+                transcript_text = original_transcript.get("text", "")
+            
+            # Generate summary and mindmap using Gemini
+            summary_result = await gemini.generate_summary(transcript_text)
+            
+            # Convert the mindmap nodes to the format expected by the database
+            mindmap_data = {
+                "nodes": [],
                 "edges": []
             }
-        }
-        await database.store_summary(upload_id, summary_data)
-        await database.update_upload_status(upload_id, "summarized")
+            
+            # Add nodes
+            for node in summary_result.mindmap.nodes:
+                mindmap_data["nodes"].append({
+                    "id": node.id,
+                    "label": node.label
+                })
+                
+                # Add edge if this node has a parent
+                if node.parent_id is not None:
+                    mindmap_data["edges"].append({
+                        "from": node.parent_id,
+                        "to": node.id
+                    })
+            
+            # Prepare and store summary data
+            summary_data = {
+                "summary": summary_result.summary,
+                "mindmap": mindmap_data
+            }
+            
+            await database.store_summary(upload_id, summary_data)
+            await database.update_upload_status(upload_id, "summarized")
+            logger.info(f"Successfully generated summary and mindmap for upload: {upload_id}")
+            
+        except Exception as e:
+            logger.error(f"Error generating summary for upload {upload_id}: {str(e)}")
+            # Create a minimal fallback summary
+            summary_data = {
+                "summary": "Unable to generate summary. Please try again later.",
+                "mindmap": {
+                    "nodes": [{ "id": 1, "label": "Conversation" }],
+                    "edges": []
+                }
+            }
+            await database.store_summary(upload_id, summary_data)
+            await database.update_upload_status(upload_id, "summary_failed")
         
         # Step 3: Contact Inference and LinkedIn Lookup
         # TODO: Implement contact inference and LinkedIn lookup via Dex MCP

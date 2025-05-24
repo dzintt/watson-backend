@@ -1,7 +1,7 @@
 from google import genai
 from google.genai import types
 from pydantic import BaseModel, Field
-from typing import List, Dict, Any, Optional
+from typing import List, Dict, Any, Optional, Tuple
 from dotenv import load_dotenv
 
 import json
@@ -28,6 +28,21 @@ class EnhancedTranscript(BaseModel):
     text: str  # Full corrected transcript text
     segments: List[EnhancedSegment]  # List of enhanced segments
     confidence: float = Field(description="Confidence score for the enhancement")
+    
+class MindMapNode(BaseModel):
+    """Represents a node in a mermaid mindmap"""
+    id: int
+    label: str
+    parent_id: Optional[int] = None
+    
+class MindMap(BaseModel):
+    """Represents a mermaid mindmap structure"""
+    nodes: List[MindMapNode]
+    
+class ConversationSummary(BaseModel):
+    """Represents a summary of a conversation with a mindmap"""
+    summary: str  # Markdown-formatted summary
+    mindmap: MindMap  # Mermaid mindmap structure
 
 # Initialize Gemini client
 client = genai.Client(api_key=os.getenv('GEMINI_API_KEY'))
@@ -272,6 +287,135 @@ async def enhance_transcript(transcript_data: Dict[str, Any]) -> EnhancedTranscr
         logger.error(f"Exception traceback: {traceback.format_exc()}")
         # If enhancement fails, return a minimally enhanced version of the original
         return create_fallback_enhancement(transcript_data)
+
+async def generate_summary(transcript_text: str) -> ConversationSummary:
+    """
+    Generate a detailed markdown summary and mermaid mindmap for a conversation transcript.
+    
+    Args:
+        transcript_text: The full text of the enhanced transcript
+        
+    Returns:
+        A ConversationSummary with markdown summary and mermaid mindmap
+    """
+    try:
+        logger.info("Generating conversation summary and mindmap with Gemini")
+        
+        # Create the prompt for summary and mindmap generation
+        base_prompt = """
+        You are an AI assistant that creates detailed summaries and mindmaps of conversations. Your task is to analyze the following transcript and create two outputs:
+
+        1. A detailed summary in markdown format that captures:
+           - The main topics discussed
+           - Key points made by each speaker
+           - Important details, decisions, or action items
+           - The flow and context of the conversation
+
+        2. A mermaid mindmap structure that visually represents the conversation topics and subtopics.
+
+        ## CONVERSATION TRANSCRIPT:
+        {}
+
+        ## OUTPUT FORMAT:
+        Respond with TWO clearly separated sections:
+        
+        SECTION 1 - SUMMARY:
+        <Begin your detailed markdown summary here>
+        
+        SECTION 2 - MINDMAP NODES:
+        <Provide a list of mindmap nodes in this format>
+        1. Conversation (root)
+        2. Topic 1 (parent: 1)
+        3. Subtopic A (parent: 2)
+        4. Subtopic B (parent: 2)
+        5. Topic 2 (parent: 1)
+        """.format(transcript_text)
+        
+        # Make the API call to Gemini without a schema
+        config = types.GenerateContentConfig(
+            temperature=0.2,
+            max_output_tokens=2048
+        )
+        
+        response = await client.aio.models.generate_content(
+            model='gemini-2.0-flash',
+            contents=[base_prompt],
+            config=config
+        )
+        
+        # Extract the text content
+        response_text = response.text
+        
+        # Split the response into summary and mindmap sections
+        if "SECTION 1 - SUMMARY:" in response_text and "SECTION 2 - MINDMAP NODES:" in response_text:
+            # Split by sections
+            parts = response_text.split("SECTION 2 - MINDMAP NODES:")
+            summary_part = parts[0].replace("SECTION 1 - SUMMARY:", "").strip()
+            mindmap_part = parts[1].strip()
+            
+            # Parse the mindmap nodes
+            mindmap_nodes = []
+            node_lines = mindmap_part.split("\n")
+            for line in node_lines:
+                if not line.strip():
+                    continue
+                    
+                # Parse lines like: "1. Conversation (root)" or "2. Topic 1 (parent: 1)"
+                try:
+                    # Extract the node number, label and parent
+                    parts = line.split(".", 1)
+                    if len(parts) < 2:
+                        continue
+                        
+                    node_id = int(parts[0].strip())
+                    label_part = parts[1].strip()
+                    
+                    # Check if there's parent info
+                    parent_id = None
+                    if "(parent:" in label_part:
+                        label_and_parent = label_part.split("(parent:")
+                        label = label_and_parent[0].strip()
+                        parent_id_str = label_and_parent[1].replace(")", "").strip()
+                        parent_id = int(parent_id_str)
+                    elif "(root)" in label_part:
+                        label = label_part.replace("(root)", "").strip()
+                    else:
+                        label = label_part
+                    
+                    # Add the node
+                    mindmap_nodes.append(MindMapNode(
+                        id=node_id,
+                        label=label,
+                        parent_id=parent_id
+                    ))
+                except Exception as e:
+                    logger.warning(f"Error parsing mindmap node: {line}, error: {e}")
+                    continue
+            
+            # If no nodes were parsed successfully, create a default root node
+            if not mindmap_nodes:
+                mindmap_nodes.append(MindMapNode(id=1, label="Conversation"))
+        else:
+            # Fallback if the expected sections aren't found
+            summary_part = response_text
+            mindmap_nodes = [MindMapNode(id=1, label="Conversation")]
+        
+        # Create and return the summary
+        return ConversationSummary(
+            summary=summary_part,
+            mindmap=MindMap(nodes=mindmap_nodes)
+        )
+        
+    except Exception as e:
+        logger.error(f"Error generating summary: {str(e)}")
+        import traceback
+        logger.error(f"Exception traceback: {traceback.format_exc()}")
+        
+        # Return a fallback summary if generation fails
+        return ConversationSummary(
+            summary="Unable to generate summary. Please try again later.",
+            mindmap=MindMap(nodes=[MindMapNode(id=1, label="Conversation")])
+        )
 
 def create_fallback_enhancement(transcript_data: Dict[str, Any]) -> EnhancedTranscript:
     """
