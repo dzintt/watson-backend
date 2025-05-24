@@ -3,6 +3,7 @@ from google.genai import types
 from pydantic import BaseModel, Field
 from typing import List, Dict, Any, Optional, Tuple
 from dotenv import load_dotenv
+from utils import common
 
 import json
 import logging
@@ -288,39 +289,78 @@ async def enhance_transcript(transcript_data: Dict[str, Any]) -> EnhancedTranscr
         # If enhancement fails, return a minimally enhanced version of the original
         return create_fallback_enhancement(transcript_data)
 
-async def generate_summary(transcript_text: str) -> ConversationSummary:
+async def generate_summary(transcript_text: str, duration: int) -> ConversationSummary:
     """
-    Generate a detailed markdown summary and mermaid mindmap for a conversation transcript.
+    Generate detailed meeting notes with HTML formatting and a mermaid mindmap for a conversation transcript.
     
     Args:
         transcript_text: The full text of the enhanced transcript
         
     Returns:
-        A ConversationSummary with markdown summary and mermaid mindmap
+        A ConversationSummary with HTML-formatted meeting notes and mermaid mindmap
     """
     try:
+        duration = common.convert_seconds_to_readable(duration)
+        
         logger.info("Generating conversation summary and mindmap with Gemini")
         
-        # Create the prompt for summary and mindmap generation
-        base_prompt = """
-        You are an AI assistant that creates detailed summaries and mindmaps of conversations. Your task is to analyze the following transcript and create two outputs:
+        # Get current date
+        from datetime import datetime
+        current_date = datetime.now().strftime('%B %d, %Y')
+        
+        # Create the prompt for meeting notes and mindmap generation
+        base_prompt = f"""
+        You are an AI assistant that creates detailed meeting notes and mindmaps of conversations. Your task is to analyze the following transcript and create two outputs:
 
-        1. A detailed summary in markdown format that captures:
+        1. Detailed meeting notes in HTML format that captures:
            - The main topics discussed
            - Key points made by each speaker
            - Important details, decisions, or action items
            - The flow and context of the conversation
+           - Format this as if a participant was taking notes during the meeting
+
+        Your meeting notes should use HTML tags for formatting with this structure:
+        <h2><strong>Conversation Title</strong></h2>
+        <p><strong>Date:</strong> {current_date}</p>
+        <p><strong>Duration:</strong> {duration}</p>
+        
+        <h3><strong>Summary:</strong></h3>
+        <p>Brief overview of the conversation</p>
+        
+        <h3><strong>Key Points Discussed:</strong></h3>
+        <h4><strong>Topic Category:</strong></h4>
+        <ul>
+          <li>Important point 1</li>
+          <li>Important point 2</li>
+        </ul>
+        
+        <h4><strong>Another Topic Category:</strong></h4>
+        <ul>
+          <li>Another point 1</li>
+          <li>Another point 2</li>
+        </ul>
+        
+        <h3><strong>Action Items:</strong></h3>
+        <ul>
+          <li>Action item 1</li>
+          <li>Action item 2</li>
+        </ul>
+        
+        <h3><strong>Participant Insights:</strong></h3>
+        <p>Brief commentary about the participants' contributions</p>
 
         2. A mermaid mindmap structure that visually represents the conversation topics and subtopics.
 
         ## CONVERSATION TRANSCRIPT:
-        {}
+        {transcript_text}
+
+        The duration of the transcript is {duration}. The date the transcript was recorded is {current_date}.
 
         ## OUTPUT FORMAT:
         Respond with TWO clearly separated sections:
         
-        SECTION 1 - SUMMARY:
-        <Begin your detailed markdown summary here>
+        SECTION 1 - MEETING NOTES:
+        <Begin your detailed HTML-formatted meeting notes here>
         
         SECTION 2 - MINDMAP NODES:
         <Provide a list of mindmap nodes in this format>
@@ -329,7 +369,7 @@ async def generate_summary(transcript_text: str) -> ConversationSummary:
         3. Subtopic A (parent: 2)
         4. Subtopic B (parent: 2)
         5. Topic 2 (parent: 1)
-        """.format(transcript_text)
+        """
         
         # Make the API call to Gemini without a schema
         config = types.GenerateContentConfig(
@@ -346,11 +386,11 @@ async def generate_summary(transcript_text: str) -> ConversationSummary:
         # Extract the text content
         response_text = response.text
         
-        # Split the response into summary and mindmap sections
-        if "SECTION 1 - SUMMARY:" in response_text and "SECTION 2 - MINDMAP NODES:" in response_text:
+        # Split the response into meeting notes and mindmap sections
+        if "SECTION 1 - MEETING NOTES:" in response_text and "SECTION 2 - MINDMAP NODES:" in response_text:
             # Split by sections
             parts = response_text.split("SECTION 2 - MINDMAP NODES:")
-            summary_part = parts[0].replace("SECTION 1 - SUMMARY:", "").strip()
+            summary_part = parts[0].replace("SECTION 1 - MEETING NOTES:", "").strip()
             mindmap_part = parts[1].strip()
             
             # Parse the mindmap nodes

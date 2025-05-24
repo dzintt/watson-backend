@@ -314,7 +314,7 @@ async def process_audio(upload_id: str, file_path: str):
                 transcript_text = original_transcript.get("text", "")
             
             # Generate summary and mindmap using Gemini
-            summary_result = await gemini.generate_summary(transcript_text)
+            summary_result = await gemini.generate_summary(transcript_text, transcript_data.get("segments", [])[-1].get("end", 0))
             
             # Convert the mindmap nodes to the format expected by the database
             mindmap_data = {
