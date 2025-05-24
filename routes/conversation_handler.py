@@ -14,6 +14,7 @@ from pydantic import BaseModel
 from modules import database
 from modules.gemini import enhance_transcript, find_linkedin_profile, generate_summary
 from utils import transcription
+from modules.linkedin import LinkedIn
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
@@ -493,7 +494,12 @@ async def process_audio(upload_id: str, file_path: str):
                 
             pfp_placeholder = []
             for profile in linkedin_profiles:
-                profile["pfp_url"] = ""
+                try:
+                    linkedin = LinkedIn()
+                    profile["pfp_url"] = linkedin.get_profile_picture(profile["linkedin_url"])["profile_picture_url"]
+                except Exception as e:
+                    logger.error(f"Error getting profile picture for {profile['name']}: {str(e)}")
+                    profile["pfp_url"] = ""
                 pfp_placeholder.append(profile)
             contact_data = {"contacts": pfp_placeholder}
             
@@ -506,7 +512,8 @@ async def process_audio(upload_id: str, file_path: str):
             contact_data = {"contacts": [], "error": str(e)}
             await database.store_contact_data(upload_id, contact_data)
             await database.update_upload_status(upload_id, "contact_inference_failed")
-        
+    
+
         logger.info(f"Completed audio processing for upload: {upload_id}")
         await database.update_upload_status(upload_id, "processed")
         
@@ -514,7 +521,7 @@ async def process_audio(upload_id: str, file_path: str):
 
 
 
-        
+
     except Exception as e:
         logger.error(f"Error processing audio for upload {upload_id}: {str(e)}")
         await database.update_upload_status(upload_id, "error", error_message=str(e))
