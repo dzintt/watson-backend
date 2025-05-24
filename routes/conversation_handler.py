@@ -516,12 +516,7 @@ async def process_audio(upload_id: str, file_path: str):
 
         logger.info(f"Completed audio processing for upload: {upload_id}")
         await database.update_upload_status(upload_id, "processed")
-        
-
-
-
-
-
+    
     except Exception as e:
         logger.error(f"Error processing audio for upload {upload_id}: {str(e)}")
         await database.update_upload_status(upload_id, "error", error_message=str(e))
