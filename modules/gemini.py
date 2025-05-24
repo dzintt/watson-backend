@@ -95,9 +95,7 @@ If no LinkedIn profiles can be confidently identified, return an empty array.
         config=query_config
     )
 
-    await gemini_linked_in_response_parser(response.text)
-
-    return response.text
+    return await gemini_linked_in_response_parser(response.text)
 
 async def gemini_linked_in_response_parser(gemini_output: str) -> list[dict[str, Any]]:
 
@@ -169,9 +167,7 @@ Example Output:
         config=linked_in_response_config
     )
 
-    print(response.text)
-
-    return response.text
+    return json.loads(response.text)
 
     
 
