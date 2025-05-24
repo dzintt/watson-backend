@@ -49,7 +49,7 @@ class ConversationSummary(BaseModel):
 client = genai.Client(api_key=os.getenv('GEMINI_API_KEY'))
 
 
-def find_linkedin_profile(transcript_text: str) -> list[str]:
+async def find_linkedin_profile(transcript_text: str) -> list[dict[str, Any]]:
     """
     Find a LinkedIn profile URL for a given name.
     
@@ -66,52 +66,82 @@ def find_linkedin_profile(transcript_text: str) -> list[str]:
     )
 
     base_prompt = """
-    You are an AI assistant specialized in finding LinkedIn profiles based on context clues from a transcript.
+    You are an AI assistant specialized in finding LinkedIn profiles based on context clues from conversation transcripts.
     
     ## IMPORTANT RULES:
-    - If a speaker's name is clearly mentioned in the conversation (e.g., "Hi, I'm John Smith"), use that name to search for the profile
-    - Do not invent names that aren't mentioned in the conversation
-    - Correct obvious speech recognition errors but preserve the authentic style of spoken language
-    - Do not add new content that wasn't in the original transcript
+    - Extract the full names of people mentioned in the transcript (e.g., "Hi, I'm Gabriel Castaneda")
+    - Focus on names that have clear identifiers like "I am", "my name is", "I'm", etc.
+    - Extract contextual clues about the person such as their school, company, job title, or interests
+    - For EACH person identified, you MUST use the google_search_linkedin tool to search for their LinkedIn profile
+    - Use the person's name AND contextual details (school, location, etc.) in your search query
+    - Make separate search queries for each person with their specific context clues
+    - Prioritize profiles that match multiple contextual clues (e.g., name AND school/company/location)
+    - Return only profiles that you're reasonably confident match the person in the transcript
+    - Do not invent details that aren't in the transcript
     
     ## TASK:
-    Find a LinkedIn profile URL for the following transcript text:
+    Analyze the following transcript to identify people mentioned and find their LinkedIn profiles:
     
-    {}
+    {0}
     
-    ## RESPONSE:
+    ## HOW TO USE THE TOOL:
+    For each person identified in the transcript:
+    1. Extract their name and contextual clues (school, job, location, etc.)
+    2. Use the google_search_linkedin tool with a query like: "[Name] [School/Company/Location] LinkedIn"
+    3. Review the search results to find the most likely profile match
+    
+    ## RESPONSE FORMAT:
+    Return a JSON array with objects for each identified person. For each person, include:
+    - name: The person's full name as mentioned in the transcript
+    - linkedin_url: The URL of their LinkedIn profile (null if not found)
+    - job_title: Their job title or student status if found
+    - description: A brief description of their background based on LinkedIn
+    
+    Example:
     [
-        {
-            "name": "John Smith",
+        {{
+            "name": "Gabriel Castaneda",
             "linkedin_url": "https://www.linkedin.com/in/gmcast",
             "job_title": "Student",
-            "description": "Head of CS club, interested in AI"
-        },
-        ...
+            "description": "Interested in AI, product, design, and startups"
+        }},
+        {{
+            "name": "Andre Smith",
+            "linkedin_url": "https://www.linkedin.com/in/andresmith",
+            "job_title": "Student at SJSU",
+            "description": "Computer Science student from San Diego"
+        }}
     ]
-    """
     
-    response = client.models.generate_content(
+    If no LinkedIn profiles can be confidently identified, return an empty array.
+"""
+    
+    response = await client.aio.models.generate_content(
         model='gemini-2.0-flash',
         contents=[base_prompt.format(transcript_text)],
         config=query_config
     )
 
-    # parse the response for the urls using regex
-    urls = re.findall(r'https://www.linkedin.com/in/[^\s]+', response.text)
-
-    # TODO: Reformat to proper response
-    # [
-    #     {
-    #         "name": "John Smith",
-    #         "linkedin_url": "https://www.linkedin.com/in/gmcast",
-    #         "job_title": "Student",
-    #         "description": "Head of CS club, interested in AI"
-    #     },
-    #     ...
-    # ]
+    # Parse the response for the json
+    json_response = response.text
+    print(json_response)
     
-    return urls
+    # Try to extract JSON array if the response isn't clean JSON
+    try:
+        return json.loads(json_response)
+    except json.JSONDecodeError:
+        # Look for JSON array pattern in the response
+        json_pattern = r'\[\s*{.*}\s*\]'
+        match = re.search(json_pattern, json_response, re.DOTALL)
+        if match:
+            try:
+                return json.loads(match.group(0))
+            except json.JSONDecodeError:
+                logger.error(f"Failed to parse extracted JSON: {match.group(0)}")
+        
+        # If we can't find a valid JSON array, return an empty list
+        logger.error(f"Failed to parse JSON from response: {json_response}")
+        return []
 
 def _fix_split_sentences(segments: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
     """

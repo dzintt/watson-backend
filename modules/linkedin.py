@@ -49,7 +49,7 @@ def google_search_linkedin(search_query: str) -> list:
         - The quality of results depends on Google's search algorithm and indexing
     """
     results = []
-    for i in search(search_query + " site:linkedin.com/in", advanced=True):
+    for i in search(search_query + " site:linkedin.com/in", num_results=5, advanced=True):
         parsed = {
             "url": i.url,
             "title": i.title,
