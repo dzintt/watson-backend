@@ -12,10 +12,6 @@ def run_sync(coro):
 def remove_formatting(text: str) -> str:
     return text.replace("`", "").replace("*", "").replace("_", "").replace("\n", " ")
 
-def load_cookies():
-    with open("linkedin_cookies.json", "r") as f:
-        return json.load(f)
-
 def convert_seconds_to_readable(seconds: int) -> str:
     hours = round(seconds // 3600)
     minutes = round((seconds % 3600) // 60)
