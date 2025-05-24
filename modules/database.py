@@ -18,6 +18,7 @@ database = client[os.getenv("DATABASE_NAME")]
 # Define collections
 uploads = database["uploads"]
 transcripts = database["transcripts"]
+enhanced_transcripts = database["enhanced_transcripts"]
 summaries = database["summaries"]
 contacts = database["contacts"]
 
@@ -159,8 +160,8 @@ async def get_transcript_by_id(transcript_id: str) -> dict:
         The transcript document or None if not found
     """
     try:
-        transcript_doc = await transcripts.find_one({"_id": transcript_id})
-        return transcript_doc
+        # Return document with the ID field included
+        return await transcripts.find_one({"_id": transcript_id})
     except Exception as e:
         logger.error(f"Error retrieving transcript {transcript_id}: {str(e)}")
         raise
@@ -176,10 +177,89 @@ async def get_transcript_by_upload_id(upload_id: str) -> dict:
         The transcript document or None if not found
     """
     try:
-        transcript_doc = await transcripts.find_one({"upload_id": upload_id})
-        return transcript_doc
+        # Return the first document matching the upload ID
+        return await transcripts.find_one({"upload_id": upload_id})
     except Exception as e:
         logger.error(f"Error retrieving transcript for upload {upload_id}: {str(e)}")
+        raise
+
+# Enhanced transcript functions
+async def store_enhanced_transcript(upload_id: str, enhanced_transcript_data: dict) -> str:
+    """
+    Store enhanced transcript data with named speakers and corrected text.
+    
+    Args:
+        upload_id: ID of the original upload
+        enhanced_transcript_data: Enhanced transcript with named speakers and corrections
+        
+    Returns:
+        The enhanced transcript document ID
+    """
+    try:
+        # Generate an ID if not provided
+        enhanced_id = enhanced_transcript_data.get("transcript_id") or str(uuid4())
+        
+        # Prepare the enhanced transcript document
+        enhanced_doc = {
+            "_id": enhanced_id,
+            "upload_id": upload_id,
+            "original_transcript_id": enhanced_transcript_data.get("original_transcript_id", upload_id),
+            "text": enhanced_transcript_data.get("text", ""),
+            "segments": enhanced_transcript_data.get("segments", []),
+            "confidence": enhanced_transcript_data.get("confidence", 0),
+            "created_at": datetime.utcnow()
+        }
+        
+        # Check if an enhanced transcript already exists for this upload_id
+        existing = await enhanced_transcripts.find_one({"upload_id": upload_id})
+        if existing:
+            # Update the existing document
+            await enhanced_transcripts.update_one(
+                {"upload_id": upload_id},
+                {"$set": {k: v for k, v in enhanced_doc.items() if k != "_id"}}
+            )
+            logger.info(f"Updated enhanced transcript for upload: {upload_id}")
+            return existing["_id"]
+        else:
+            # Insert new document
+            await enhanced_transcripts.insert_one(enhanced_doc)
+            logger.info(f"Stored enhanced transcript with ID: {enhanced_id} for upload: {upload_id}")
+            return enhanced_id
+    
+    except Exception as e:
+        logger.error(f"Error storing enhanced transcript for upload {upload_id}: {str(e)}")
+        raise
+
+async def get_enhanced_transcript_by_id(enhanced_id: str) -> dict:
+    """
+    Get enhanced transcript by its ID.
+    
+    Args:
+        enhanced_id: The enhanced transcript ID
+        
+    Returns:
+        The enhanced transcript document or None if not found
+    """
+    try:
+        return await enhanced_transcripts.find_one({"_id": enhanced_id})
+    except Exception as e:
+        logger.error(f"Error retrieving enhanced transcript {enhanced_id}: {str(e)}")
+        raise
+
+async def get_enhanced_transcript_by_upload_id(upload_id: str) -> dict:
+    """
+    Get enhanced transcript by the original upload ID.
+    
+    Args:
+        upload_id: The original upload ID
+        
+    Returns:
+        The enhanced transcript document or None if not found
+    """
+    try:
+        return await enhanced_transcripts.find_one({"upload_id": upload_id})
+    except Exception as e:
+        logger.error(f"Error retrieving enhanced transcript for upload {upload_id}: {str(e)}")
         raise
 
 # Summary related functions

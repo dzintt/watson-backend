@@ -3,7 +3,7 @@ import uuid
 import os
 from fastapi import APIRouter, status, UploadFile, File, BackgroundTasks, HTTPException, Path
 from pydantic import BaseModel
-from modules import database
+from modules import database, gemini
 from utils import transcription
 
 logging.basicConfig(level=logging.INFO)
@@ -24,6 +24,11 @@ class TranscriptSummary(BaseModel):
     
 class ContactInference(BaseModel):
     contact: dict
+    
+class EnhancedTranscriptResponse(BaseModel):
+    transcript_id: str
+    text: str
+    segments: list
 
 @router.post(
     "/upload",
@@ -108,6 +113,85 @@ async def get_summary(transcript_id: str = Path(..., description="The transcript
         )
 
 @router.get(
+    "/enhanced-transcript/{upload_id}",
+    response_model=EnhancedTranscriptResponse,
+    status_code=status.HTTP_200_OK,
+)
+async def get_enhanced_transcript(upload_id: str = Path(..., description="The upload ID to retrieve enhanced transcript for")):
+    """Get enhanced transcript with named speakers and corrected text"""
+    try:
+        # Check if enhanced transcript exists
+        enhanced = await database.get_enhanced_transcript_by_upload_id(upload_id)
+        if enhanced:
+            logger.info(f"Found existing enhanced transcript for upload {upload_id}")
+            return {
+                "transcript_id": enhanced.get("_id"),
+                "text": enhanced.get("text", ""),
+                "segments": enhanced.get("segments", [])
+            }
+            
+        # If no enhanced transcript exists, check if upload is still processing
+        upload = await database.get_upload_by_id(upload_id)
+        if not upload:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail=f"Upload with ID {upload_id} not found"
+            )
+            
+        # Check upload status
+        if upload.get("status") in ["uploaded", "processing", "enhancing"]:
+            raise HTTPException(
+                status_code=status.HTTP_202_ACCEPTED,
+                detail=f"Upload is still being processed. Current status: {upload.get('status')}"
+            )
+            
+        # If enhancement failed, try to generate it now
+        if upload.get("status") == "enhancement_failed" or upload.get("status") == "transcribed":
+            # Get the transcript
+            transcript = await database.get_transcript_by_upload_id(upload_id)
+            if not transcript:
+                raise HTTPException(
+                    status_code=status.HTTP_404_NOT_FOUND,
+                    detail=f"Transcript for upload {upload_id} not found"
+                )
+                
+            # Try to enhance the transcript now
+            logger.info(f"Attempting to enhance transcript now for upload: {upload_id}")
+            enhanced_transcript = await gemini.enhance_transcript(transcript)
+            
+            # Store the enhanced transcript
+            enhanced_transcript_data = enhanced_transcript.dict()
+            enhanced_transcript_data["original_transcript_id"] = upload_id
+            
+            # Store in database
+            enhanced_id = await database.store_enhanced_transcript(upload_id, enhanced_transcript_data)
+            
+            # Update upload status
+            await database.update_upload_status(upload_id, "enhanced")
+            
+            return {
+                "transcript_id": enhanced_id,
+                "text": enhanced_transcript.text,
+                "segments": enhanced_transcript.segments
+            }
+        
+        # If we got here, something unexpected happened
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Unable to retrieve or generate enhanced transcript. Upload status: {upload.get('status')}"
+        )
+            
+    except HTTPException as e:
+        # Re-raise HTTP exceptions
+        raise
+    except Exception as e:
+        logger.error(f"Error retrieving enhanced transcript for upload {upload_id}: {str(e)}")
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Error retrieving enhanced transcript: {str(e)}"
+        )
+
+@router.get(
     "/contact-inference/{transcript_id}",
     response_model=ContactInference,
     status_code=status.HTTP_200_OK,
@@ -182,11 +266,34 @@ async def process_audio(upload_id: str, file_path: str):
         # Set transcript ID to match upload ID for easier reference
         transcript_data["transcript_id"] = upload_id
         
-        # Store transcript data in database
+        # Store original transcript data in database
         await database.store_transcript(upload_id, transcript_data)
         
         # Update status to indicate transcription is complete
         await database.update_upload_status(upload_id, "transcribed")
+        
+        # Enhanced transcript with Gemini - identify speakers by name and correct text
+        logger.info(f"Enhancing transcript with Gemini for upload: {upload_id}")
+        await database.update_upload_status(upload_id, "enhancing")
+        
+        try:
+            # Use Gemini to enhance the transcript
+            enhanced_transcript = await gemini.enhance_transcript(transcript_data)
+            
+            # Store the enhanced transcript
+            enhanced_transcript_data = enhanced_transcript.dict()
+            enhanced_transcript_data["original_transcript_id"] = upload_id
+            
+            # Store enhanced transcript in the database
+            enhanced_id = await database.store_enhanced_transcript(upload_id, enhanced_transcript_data)
+            
+            logger.info(f"Successfully enhanced transcript with Gemini for upload: {upload_id}")
+            await database.update_upload_status(upload_id, "enhanced")
+            
+        except Exception as e:
+            logger.error(f"Error enhancing transcript with Gemini: {str(e)}")
+            # Continue with processing even if enhancement fails
+            await database.update_upload_status(upload_id, "enhancement_failed")
         
         # Step 2: Summarization and Mindmap Generation
         # TODO: Implement summary and mindmap generation
