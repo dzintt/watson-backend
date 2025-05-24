@@ -221,15 +221,10 @@ async def get_contact_inference(transcript_id: str = Path(..., description="The 
             
         # TODO: Implement actual contact inference and LinkedIn lookup
         # For now, return a placeholder
-        logger.info(f"Generating placeholder contact data for transcript {transcript_id}")
-        contact_data = {
-            "contact": {
-                "name": "Contact extraction not yet implemented",
-                "title": "Placeholder",
-                "company": "Example Corp",
-                "linkedin_url": "https://linkedin.com/"
-            }
-        }
+        # logger.info(f"Generating placeholder contact data for transcript {transcript_id}")
+        # contact_data = {
+        #     ...
+        # }
         
         # Store the contact data
         await database.store_contact_data(transcript_id, contact_data)
@@ -362,17 +357,12 @@ async def process_audio(upload_id: str, file_path: str):
         # Step 3: Contact Inference and LinkedIn Lookup
         # TODO: Implement contact inference and LinkedIn lookup via Dex MCP
         # For now, we'll generate a placeholder contact
-        logger.info(f"Generating placeholder contact data for upload: {upload_id}")
-        contact_data = {
-            "contact": {
-                "name": "Contact extraction not yet implemented",
-                "title": "Placeholder",
-                "company": "Example Corp",
-                "linkedin_url": "https://linkedin.com/"
-            }
-        }
-        await database.store_contact_data(upload_id, contact_data)
-        await database.update_upload_status(upload_id, "contact_identified")
+        # logger.info(f"Generating placeholder contact data for upload: {upload_id}")
+        # contact_data = {
+
+        # }
+        # await database.store_contact_data(upload_id, contact_data)
+        # await database.update_upload_status(upload_id, "contact_identified")
         
         logger.info(f"Completed audio processing for upload: {upload_id}")
         await database.update_upload_status(upload_id, "processed")
