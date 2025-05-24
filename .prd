@@ -1,0 +1,125 @@
+# Product Requirements Document (PRD)
+
+## Project Title
+
+AI-Powered Conversation Summarizer - Backend API
+
+---
+
+## Purpose
+
+To develop the backend API for a mobile app that records conversations, transcribes and identifies speakers, summarizes key points, visualizes content with a mindmap, and identifies conversation participants via LinkedIn using Dex MCP.
+
+---
+
+## Scope
+
+This PRD covers the backend API services required to support the following mobile app functionalities:
+
+* Audio recording upload
+* Speaker diarization and transcription
+* Summarization and mindmap generation
+* Entity/person recognition and LinkedIn lookup via Dex MCP
+
+---
+
+## Features
+
+### 1. Audio Upload Endpoint
+
+**Endpoint:** `POST /api/conversation/upload`
+**Functionality:** Accepts audio recordings (format: WAV/MP3/M4A).
+**Payload:**
+
+```json
+{
+  "file": "binary"
+}
+```
+
+**Response:**
+
+```json
+{
+  "upload_id": "uuid",
+  "status": "uploaded"
+}
+```
+
+**Notes:** Store audio securely and initiate processing pipeline asynchronously.
+
+---
+
+### 2. Transcription & Speaker Diarization
+
+**Triggered by:** Upload completion
+**Internal Processing Task:**
+
+* Run transcription (e.g., Whisper)
+* Perform speaker diarization (e.g., pyannote.audio)
+  **Storage:**
+* Store speaker-labeled transcript
+
+**Output Schema:**
+
+```json
+{
+  "transcript_id": "uuid",
+  "text": [
+    {"speaker": "Speaker 1", "start": 0.1, "end": 3.5, "text": "Hello"},
+    {"speaker": "Speaker 2", "start": 3.6, "end": 7.2, "text": "Hi there!"}
+  ]
+}
+```
+
+---
+
+### 3. Summarization & Mindmap Generation
+
+**Endpoint:** `GET /api/conversation/summary/{transcript_id}`
+**Functionality:** Generate a summary and mindmap from the transcript
+**Response:**
+
+```json
+{
+  "summary": "Key discussion points...",
+  "mindmap": {
+    "nodes": [...],
+    "edges": [...]
+  }
+}
+```
+
+**Implementation:** Use NLP pipeline (e.g., transformers, graphviz for mindmap).
+
+---
+
+### 4. Contact Inference and LinkedIn Lookup
+
+**Endpoint:** `GET /api/conversation/contact-inference/{transcript_id}`
+**Functionality:**
+
+* Extract named entities (NER)
+* Infer contact identity using context (e.g., name, company)
+* Use [Dex MCP](https://github.com/kevinrgu/dex-mcp) for LinkedIn profile matching
+
+**Response:**
+
+```json
+{
+  "contact": {
+    "name": "John Doe",
+    "title": "Product Manager",
+    "company": "TechCorp",
+    "linkedin_url": "https://linkedin.com/in/johndoe"
+  }
+}
+```
+
+---
+
+## Future Considerations
+
+* Real-time transcription pipeline
+* CRM integration (e.g., Hubspot, Salesforce)
+* Multilingual support
