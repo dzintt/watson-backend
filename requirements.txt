@@ -1,0 +1,24 @@
+# Web Framework
+fastapi
+uvicorn
+pydantic
+
+# Database
+motor
+pymongo
+
+# AI & NLP
+google-genai
+ffmpeg-python
+pydub
+pyannote-audio
+whisper
+
+# Web Scraping
+selenium
+webdriver-manager
+googlesearch-python
+
+# Middleware & Utils
+itsdangerous
+python-dotenv
