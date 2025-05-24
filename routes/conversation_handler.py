@@ -485,7 +485,12 @@ async def process_audio(upload_id: str, file_path: str):
             
             if linkedin_profiles:
                 logger.info(f"Found {len(linkedin_profiles)} LinkedIn profiles for upload: {upload_id}")
-                contact_data = {"contacts": linkedin_profiles}
+
+                pfp_placeholder = []
+                for profile in linkedin_profiles:
+                    profile["pfp_url"] = ""
+                    pfp_placeholder.append(profile)
+                contact_data = {"contacts": pfp_placeholder}
             else:
                 logger.info(f"No LinkedIn profiles found for upload: {upload_id}")
                 contact_data = {"contacts": []}
