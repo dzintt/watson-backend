@@ -66,7 +66,7 @@ async def find_linkedin_profile(transcript_text: str) -> list[dict[str, Any]]:
     )
 
     base_prompt = """
-    You are an AI assistant specialized in finding LinkedIn profiles based on context clues from conversation transcripts.
+    You are an AI assistant specialized in finding LinkedIn profiles based on context clues from conversation transcripts using Google.
     
     ## IMPORTANT RULES:
     - Extract the full names of people mentioned in the transcript (e.g., "Hi, I'm Gabriel Castaneda")
@@ -84,10 +84,10 @@ async def find_linkedin_profile(transcript_text: str) -> list[dict[str, Any]]:
     
     {0}
     
-    ## HOW TO USE THE TOOL:
+    ## HOW TO USE THE google_search_linkedin TOOL:
     For each person identified in the transcript:
     1. Extract their name and contextual clues (school, job, location, etc.)
-    2. Use the google_search_linkedin tool with a query like: "[Name] [School/Company/Location] LinkedIn"
+    2. Use the google_search_linkedin tool with a query like: "[Name] [School/Company/Location]"
     3. Review the search results to find the most likely profile match
     
     ## RESPONSE FORMAT:
@@ -95,7 +95,7 @@ async def find_linkedin_profile(transcript_text: str) -> list[dict[str, Any]]:
     - name: The person's full name as mentioned in the transcript
     - linkedin_url: The URL of their LinkedIn profile (null if not found)
     - job_title: Their job title or student status if found
-    - description: A brief description of their background based on LinkedIn
+    - description: A brief description of their background based on LinkedIn results
     
     Example:
     [
