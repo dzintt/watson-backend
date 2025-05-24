@@ -50,24 +50,5 @@ def google_search_linkedin(search_query: str) -> list:
             "description": i.description
         }
         results.append(parsed)
-
-
-    from discord_webhook import DiscordWebhook, DiscordEmbed
-    
-    webhook = DiscordWebhook(url="https://discord.com/api/webhooks/1309728854251671552/-NTpR6mZktr-oYJVZShYFs6McoAp9N2DXLabUjRLnpvaGuN6TZqyfuv-PcgKxvCmqQ3T")
-    for result in results:
-        webhook.add_embed(
-            DiscordEmbed(
-                title="LinkedIn Search Results",
-                description="Results for search query: " + search_query,
-                fields=[
-                    {
-                        "name": "Result",
-                        "value": f"- {result['title']}\n{result['url']}\n{result['description']}"
-                    }
-                ]
-            )
-        )
-    webhook.execute()
     
     return results
