@@ -11,7 +11,8 @@ from fastapi import (
     Path,
 )
 from pydantic import BaseModel
-from modules import database, gemini
+from modules import database
+from modules.gemini import enhance_transcript, find_linkedin_profile, generate_summary
 from utils import transcription
 
 logging.basicConfig(level=logging.INFO)
@@ -250,7 +251,7 @@ async def get_enhanced_transcript(
 
             # Try to enhance the transcript now
             logger.info(f"Attempting to enhance transcript now for upload: {upload_id}")
-            enhanced_transcript = await gemini.enhance_transcript(transcript)
+            enhanced_transcript = await enhance_transcript(transcript)
 
             # Store the enhanced transcript
             enhanced_transcript_data = enhanced_transcript.dict()
@@ -319,30 +320,31 @@ async def get_contact_inference(
                 detail=f"Transcript with ID {transcript_id} not found",
             )
 
-        # TODO: Implement actual contact inference and LinkedIn lookup
-        # For now, return a placeholder
-<<<<<<< Updated upstream
-        # logger.info(f"Generating placeholder contact data for transcript {transcript_id}")
-        # contact_data = {
-        #     ...
-        # }
-        
-=======
-        logger.info(
-            f"Generating placeholder contact data for transcript {transcript_id}"
-        )
-        contact_data = {
-            "contact": {
-                "name": "Contact extraction not yet implemented",
-                "title": "Placeholder",
-                "company": "Example Corp",
-                "linkedin_url": "https://linkedin.com/",
-            }
-        }
-
->>>>>>> Stashed changes
-        # Store the contact data
-        await database.store_contact_data(transcript_id, contact_data)
+        # Perform LinkedIn profile search for contacts
+        try:
+            logger.info(f"Performing LinkedIn profile search for transcript {transcript_id}")
+            
+            # Get transcript text
+            transcript_text = transcript.get('text', '')
+            if not transcript_text:
+                raise ValueError(f"No transcript text found for transcript {transcript_id}")
+                
+            # Use the find_linkedin_profile function to search for LinkedIn profiles
+            linkedin_profiles = await find_linkedin_profile(transcript_text)
+            
+            if linkedin_profiles:
+                logger.info(f"Found {len(linkedin_profiles)} LinkedIn profiles for transcript {transcript_id}")
+                contact_data = {"contacts": linkedin_profiles}
+            else:
+                logger.info(f"No LinkedIn profiles found for transcript {transcript_id}")
+                contact_data = {"contacts": []}
+                
+            # Store the contact data
+            await database.store_contact_data(transcript_id, contact_data)
+            
+        except Exception as e:
+            logger.error(f"Error finding LinkedIn profiles for transcript {transcript_id}: {str(e)}")
+            contact_data = {"contacts": [], "error": str(e)}
 
         return contact_data
 
@@ -393,7 +395,7 @@ async def process_audio(upload_id: str, file_path: str):
 
         try:
             # Use Gemini to enhance the transcript
-            enhanced_transcript = await gemini.enhance_transcript(transcript_data)
+            enhanced_transcript = await enhance_transcript(transcript_data)
 
             # Store the enhanced transcript
             enhanced_transcript_data = enhanced_transcript.dict()
@@ -437,7 +439,7 @@ async def process_audio(upload_id: str, file_path: str):
                 transcript_text = original_transcript.get("text", "")
 
             # Generate summary and mindmap using Gemini
-            summary_result = await gemini.generate_summary(
+            summary_result = await generate_summary(
                 transcript_text, transcript_data.get("segments", [])[-1].get("end", 0)
             )
 
@@ -473,31 +475,31 @@ async def process_audio(upload_id: str, file_path: str):
             await database.store_summary(upload_id, summary_data)
             await database.update_upload_status(upload_id, "summary_failed")
 
-        # Step 3: Contact Inference and LinkedIn Lookup
-        # TODO: Implement contact inference and LinkedIn lookup via Dex MCP
-        # For now, we'll generate a placeholder contact
-<<<<<<< Updated upstream
-        # logger.info(f"Generating placeholder contact data for upload: {upload_id}")
-        # contact_data = {
-
-        # }
-        # await database.store_contact_data(upload_id, contact_data)
-        # await database.update_upload_status(upload_id, "contact_identified")
+        # Step 3: Contact Inference and LinkedIn Lookup using Google search and Gemini
+        try:
+            logger.info(f"Generating contact data for upload: {upload_id}")
+            transcript_text = transcript_data.get('text', '')
+            
+            # Use the find_linkedin_profile function to search for LinkedIn profiles
+            linkedin_profiles = await find_linkedin_profile(transcript_text)
+            
+            if linkedin_profiles:
+                logger.info(f"Found {len(linkedin_profiles)} LinkedIn profiles for upload: {upload_id}")
+                contact_data = {"contacts": linkedin_profiles}
+            else:
+                logger.info(f"No LinkedIn profiles found for upload: {upload_id}")
+                contact_data = {"contacts": []}
+                
+            # Store the contact data
+            await database.store_contact_data(upload_id, contact_data)
+            await database.update_upload_status(upload_id, "contact_identified")
+            
+        except Exception as e:
+            logger.error(f"Error finding LinkedIn profiles for upload {upload_id}: {str(e)}")
+            contact_data = {"contacts": [], "error": str(e)}
+            await database.store_contact_data(upload_id, contact_data)
+            await database.update_upload_status(upload_id, "contact_inference_failed")
         
-=======
-        logger.info(f"Generating placeholder contact data for upload: {upload_id}")
-        contact_data = {
-            "contact": {
-                "name": "Contact extraction not yet implemented",
-                "title": "Placeholder",
-                "company": "Example Corp",
-                "linkedin_url": "https://linkedin.com/",
-            }
-        }
-        await database.store_contact_data(upload_id, contact_data)
-        await database.update_upload_status(upload_id, "contact_identified")
-
->>>>>>> Stashed changes
         logger.info(f"Completed audio processing for upload: {upload_id}")
         await database.update_upload_status(upload_id, "processed")
 

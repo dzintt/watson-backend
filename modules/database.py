@@ -421,8 +421,7 @@ async def store_contact_data(upload_id: str, contact_data: dict) -> str:
         contact_doc = {
             "_id": contact_id,
             "upload_id": upload_id,
-            "contact": contact_data.get("contact", {}),
-            "raw_entities": contact_data.get("raw_entities", []),
+            "contact": contact_data,
             "created_at": datetime.utcnow(),
         }
 
